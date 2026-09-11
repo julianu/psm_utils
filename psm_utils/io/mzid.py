@@ -409,22 +409,33 @@ class MzidReader(ReaderBase):
 
 
 class MzidQuickReader(ReaderBase):
-    def __init__(self, filename: str | Path, *args, score_key: str = None, **kwargs) -> None:
+    """
+    Reader for HUPO-PSI mzIdentML format PSM files.
+
+    This version uses a quick parsing approach using pyteomics.
+    """
+
+    def __init__(
+            self, filename: str | Path, *args, score_key: str = None, **kwargs
+    ) -> None:
         """
         Quick, and not totally complete reader for mzIdentML PSM files.
 
         Parameters
         ----------
-        filename: str, pathlib.Path
+        filename
             Path to PSM file.
-        score_key: str, optional
+        *args
+            Additional positional arguments passed to parent class.
+        score_key
             Name of the score metric to use as PSM score. If not provided, the score metric is
             inferred from the file if one of the child parameters of ``MS:1001143`` is present.
+        **kwargs
+            Additional keyword arguments passed to parent class.
 
         Examples
         --------
-
-        MzidQuickReader supports iteration like MzidReader.
+        MzidQuickReader supports iteration like MzidReader (TODO: add these here...)
 
         Notes
         -----
@@ -486,7 +497,7 @@ class MzidQuickReader(ReaderBase):
                 )
 
     def _preparse_references(self) -> None:
-        """pre-parses all information relevant for references"""
+        """Pre-parses all information relevant for mzid references."""
         for _, element in etree.iterparse(str(self.filename), events=("end", ), tag=("{*}Peptide", "{*}PeptideEvidence", "{*}DBSequence", "{*}SearchDatabase", "{*}SpectraData", "{*}AnalysisSoftware")):
             tag = element.tag.rpartition("}")[2]
 
@@ -781,7 +792,7 @@ class MzidQuickReader(ReaderBase):
         return software_name
 
     @staticmethod
-    def _parse_peptidoform(seq: str, modification_list: list[dict], charge: Union[int, None]):
+    def _parse_peptidoform(seq: str, modification_list: list[dict], charge: int | None):
         """Parse mzid sequence and modifications to Peptidoform."""
         peptide = [""] + list(seq) + [""]
 
@@ -823,10 +834,10 @@ class MzidQuickReader(ReaderBase):
     def _get_peptide_spectrum_match(
         self,
         spectrum_id: str,
-        spectrum_title: Union[str, None],
-        run: Union[str, None],
-        rt: Union[float, None],
-        ion_mobility: Union[float, None],
+        spectrum_title: str | None,
+        run: str | None,
+        rt: float | None,
+        ion_mobility: float | None,
         spectrum_identification_item: dict[str, str | float | list],
     ) -> PSM:
         """Parse single mzid entry to :py:class:`~psm_utils.peptidoform.Peptidoform`."""
@@ -946,7 +957,7 @@ class MzidQuickReader(ReaderBase):
                 return lower_keys[score]
 
     @staticmethod
-    def _infer_qvalue_name(keys) -> Union[str, None]:
+    def _infer_qvalue_name(keys) -> str | None:
         """Infer the q-value term from the list of known terms."""
         for qvalue in Q_VALUE_TERMS:
             if qvalue in keys:
@@ -955,7 +966,7 @@ class MzidQuickReader(ReaderBase):
             return None
 
     @staticmethod
-    def _infer_pep_name(keys) -> Union[str, None]:
+    def _infer_pep_name(keys) -> str | None:
         """Infer the PEP term from the list of known terms."""
         for pep in PEP_TERMS:
             if pep in keys:
