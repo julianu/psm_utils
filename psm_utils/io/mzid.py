@@ -457,6 +457,7 @@ class MzidQuickReader(ReaderBase):
         self._qvalue_key: str | None = None
         self._pep_key: str | None = None
         self._im_key: str | None = None
+        self._source: str | None = None
 
         # some helper-dictionaries
         self.peptides_dict: dict[str, dict[str, Any]] = {}
