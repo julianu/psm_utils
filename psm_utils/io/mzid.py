@@ -531,8 +531,9 @@ class MzidQuickReader(ReaderBase):
                 self.search_dbs_dict |= MzidQuickReader._parse_searchdb(element)
             elif tag == "SpectraData":
                 self.spectra_data_dict |= MzidQuickReader._parse_spectradata(element)
-            elif tag == "AnalysisSoftware":
-                self._source = MzidQuickReader._parse_analysissoftware(element)
+            elif tag == "AnalysisSoftware" and self._source is None:
+                # only set the source if it hasn't been set yet, and hence only the first AnalysisSoftware element will be used
+                self._source = MzidQuickReader._parse_elements_attributes(element).get("name")
 
             element.clear()
 
@@ -836,30 +837,6 @@ class MzidQuickReader(ReaderBase):
         del pep_evidence_data["peptide_ref"]
 
         return pep_evidence_data
-
-    @staticmethod
-    def _parse_analysissoftware(spectradata_element: _Element) -> str | None:
-        software_name: str | None = None
-        for event, item in etree.iterwalk(
-            spectradata_element,
-            events=(
-                "start",
-                "end",
-            ),
-            tag=("{*}SoftwareName"),
-        ):
-            if event == "start":
-                # just take the name of the first userParam or cvParam in the SoftwareName
-                for _, sub_item in etree.iterwalk(
-                    item, events=("end",), tag=("{*}cvParam", "{*}userParam")
-                ):
-                    software_name = MzidQuickReader._parse_elements_attributes(sub_item)["name"]
-
-                # there can be other tags, not needed for now
-            else:
-                item.clear()
-
-        return software_name
 
     @staticmethod
     def _parse_peptidoform(
