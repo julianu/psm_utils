@@ -808,12 +808,15 @@ class MzidQuickReader(ReaderBase):
         param_name: str | None = None
         param_val: str | float | None = None
         param_attrs = MzidQuickReader._parse_elements_attributes(param_item)
-        if "name" in param_attrs.keys() and "value" in param_attrs.keys():
+        if "name" in param_attrs.keys():
             param_name = param_attrs["name"]
-            try:
-                param_val = float(param_attrs["value"])
-            except ValueError:
-                param_val = str(param_attrs["value"])
+            if "value" in param_attrs.keys():
+                try:
+                    param_val = float(param_attrs["value"])
+                except ValueError:
+                    param_val = str(param_attrs["value"])
+            else:
+                param_val = ""
 
         return param_name, param_val
 
