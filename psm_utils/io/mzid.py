@@ -8,7 +8,6 @@ format.
 
 from __future__ import annotations
 
-import copy
 import logging
 import re
 import xml.etree.ElementTree as ET
@@ -450,7 +449,7 @@ class MzidQuickReader(ReaderBase):
 
         """
         super().__init__(filename, *args, **kwargs)
-        self._non_metadata_keys = ["ContactRole", "passThreshold"]
+        self._non_metadata_keys: set[str] = {"ContactRole", "passThreshold"}
         self._score_key = score_key
         self._rt_key: str | None = None
         self._spectrum_rt_key: str | None = None
@@ -466,47 +465,24 @@ class MzidQuickReader(ReaderBase):
         self.search_dbs_dict: dict[str, dict[str, Any]] = {}
         self.spectra_data_dict: dict[str, dict[str, Any]] = {}
 
-        self._preparse_references()
-
     def __iter__(self):
-        """Iterate over file and return PSMs one-by-one."""
+        """
+        Iterate over file and return PSMs one-by-one.
+
+        Notes
+        -----
+        Reference elements (``Peptide``, ``PeptideEvidence``, ``DBSequence``,
+        ``SearchDatabase``, ``SpectraData``, ``AnalysisSoftware``) and
+        ``SpectrumIdentificationResult`` elements are parsed in a single streaming pass,
+        relying on the mzIdentML schema guaranteeing that ``SequenceCollection`` and
+        ``DataCollection/Inputs`` (which hold the former) always precede
+        ``DataCollection/AnalysisData`` (which holds the latter) in document order. By the
+        time a ``SpectrumIdentificationResult`` is encountered, all reference dicts are
+        therefore already fully populated.
+
+        """
         first_sir = True
 
-        for event, element in etree.iterparse(
-            str(self.filename), events=("end",), tag=("{*}SpectrumIdentificationResult")
-        ):
-            spectrum = self._parse_sir(element)
-
-            if first_sir:
-                # Parse spectrum metadata
-                self._get_toplevel_non_metadata_keys(spectrum.keys())
-
-                # Parse PSM non-metadata keys, rt key and score key
-                self._get_non_metadata_keys(spectrum["SpectrumIdentificationItem"][0].keys())
-                first_sir = False
-
-            spectrum_id = spectrum["spectrumID"]
-            spectrum_title = spectrum["spectrum title"] if "spectrum title" in spectrum else None
-            run = Path(spectrum["location"]).stem if "location" in spectrum else None
-            rt = (
-                float(spectrum[self._spectrum_rt_key])
-                if self._spectrum_rt_key and self._spectrum_rt_key in spectrum
-                else None
-            )
-            ion_mobility = (
-                float(spectrum[self._im_key])
-                if self._im_key and self._im_key in spectrum
-                else None
-            )
-
-            # Parse PSMs from spectrum
-            for entry in spectrum["SpectrumIdentificationItem"]:
-                yield self._get_peptide_spectrum_match(
-                    spectrum_id, spectrum_title, run, rt, ion_mobility, entry
-                )
-
-    def _preparse_references(self) -> None:
-        """Pre-parses all information relevant for mzid references."""
         for _, element in etree.iterparse(
             str(self.filename),
             events=("end",),
@@ -517,11 +493,44 @@ class MzidQuickReader(ReaderBase):
                 "{*}SearchDatabase",
                 "{*}SpectraData",
                 "{*}AnalysisSoftware",
+                "{*}SpectrumIdentificationResult",
             ),
         ):
             tag = element.tag.rpartition("}")[2]
 
-            if tag == "Peptide":
+            if tag == "SpectrumIdentificationResult":
+                spectrum = self._parse_sir(element)
+
+                if first_sir:
+                    # Parse spectrum metadata
+                    self._get_toplevel_non_metadata_keys(spectrum.keys())
+
+                    # Parse PSM non-metadata keys, rt key and score key
+                    self._get_non_metadata_keys(spectrum["SpectrumIdentificationItem"][0].keys())
+                    first_sir = False
+
+                spectrum_id = spectrum["spectrumID"]
+                spectrum_title = (
+                    spectrum["spectrum title"] if "spectrum title" in spectrum else None
+                )
+                run = Path(spectrum["location"]).stem if "location" in spectrum else None
+                rt = (
+                    float(spectrum[self._spectrum_rt_key])
+                    if self._spectrum_rt_key and self._spectrum_rt_key in spectrum
+                    else None
+                )
+                ion_mobility = (
+                    float(spectrum[self._im_key])
+                    if self._im_key and self._im_key in spectrum
+                    else None
+                )
+
+                # Parse PSMs from spectrum
+                for entry in spectrum["SpectrumIdentificationItem"]:
+                    yield self._get_peptide_spectrum_match(
+                        spectrum_id, spectrum_title, run, rt, ion_mobility, entry
+                    )
+            elif tag == "Peptide":
                 self.peptides_dict |= MzidQuickReader._parse_peptide(element)
             elif tag == "PeptideEvidence":
                 self.peptide_evidences_dict |= MzidQuickReader._parse_peptideevidence(element)
@@ -535,7 +544,11 @@ class MzidQuickReader(ReaderBase):
                 # only set the source if it hasn't been set yet, and hence only the first AnalysisSoftware element will be used
                 self._source = MzidQuickReader._parse_elements_attributes(element).get("name")
 
+            # Free memory: clear the element itself, then drop now-empty preceding siblings
+            # from the parent so memory use stays bounded on very large files.
             element.clear()
+            while element.getprevious() is not None:
+                del element.getparent()[0]
 
     @staticmethod
     def _parse_peptide(peptide_element: _Element) -> dict[str, dict[str, Any]]:
@@ -592,12 +605,8 @@ class MzidQuickReader(ReaderBase):
         return params
 
     @staticmethod
-    def _parse_elements_attributes(param: _Element):
-        attributes = {}
-        for idx, item in param.items():
-            attributes[idx] = item
-
-        return attributes
+    def _parse_elements_attributes(param: _Element) -> dict[str, Any]:
+        return dict(cast(dict[str, str], param.attrib))
 
     @staticmethod
     def _parse_peptideevidence(pepevidence_element: _Element) -> dict[str, dict]:
@@ -822,7 +831,10 @@ class MzidQuickReader(ReaderBase):
 
     def _parse_peptide_evidence_ref(self, pepevidenceref_item: _Element) -> dict[str, dict]:
         pep_evidence_attrs = MzidQuickReader._parse_elements_attributes(pepevidenceref_item)
-        pep_evidence_data = copy.deepcopy(
+        # A shallow copy is sufficient: only top-level keys are ever added/removed below
+        # (via `|=`/`del`); the one nested value (a peptide's `Modification` list) is only
+        # ever read downstream, never mutated in place.
+        pep_evidence_data = dict(
             self.peptide_evidences_dict[pep_evidence_attrs["peptideEvidence_ref"]]
         )
 
@@ -992,7 +1004,7 @@ class MzidQuickReader(ReaderBase):
                 break
 
         # Keys that are not necessary for metadata
-        self._non_metadata_keys.extend(default_keys)
+        self._non_metadata_keys.update(default_keys)
 
     def _get_toplevel_non_metadata_keys(self, keys: list):
         """Gather all keys at spectrum-level that should not be written to metadata."""
@@ -1000,14 +1012,14 @@ class MzidQuickReader(ReaderBase):
         for key in ["retention time", "scan start time"]:
             if key in keys:
                 self._spectrum_rt_key = key
-                self._non_metadata_keys.append(key)
+                self._non_metadata_keys.add(key)
                 break
 
         # Check if ion mobility is encoded in spectrum metadata
         for im_key in ["inverse reduced ion mobility"]:
             if im_key in keys:
                 self._im_key = im_key
-                self._non_metadata_keys.append(im_key)
+                self._non_metadata_keys.add(im_key)
                 break
 
     @staticmethod
