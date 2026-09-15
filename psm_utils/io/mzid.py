@@ -571,9 +571,12 @@ class MzidQuickReader(ReaderBase):
         return {cast(str, pep_id): attributes}
 
     @staticmethod
-    def _parse_modification(modification: _Element) -> dict[str, str]:
+    def _parse_modification(modification: _Element) -> dict[str, Any]:
         # parse the Modification's attributes
         params = MzidQuickReader._parse_elements_attributes(modification)
+
+        if "monoisotopicMassDelta" in params.keys():
+            params["monoisotopicMassDelta"] = float(params["monoisotopicMassDelta"])
 
         for event, item in etree.iterwalk(modification, events=("start", "end")):
             if event == "start":
@@ -859,13 +862,23 @@ class MzidQuickReader(ReaderBase):
         return software_name
 
     @staticmethod
-    def _parse_peptidoform(seq: str, modification_list: list[dict], charge: int | None):
+    def _parse_peptidoform(
+        seq: str, modification_list: list[dict[str, Any]], charge: int | None
+    ) -> Peptidoform:
         """Parse mzid sequence and modifications to Peptidoform."""
         peptide = [""] + list(seq) + [""]
 
         # Add modification labels
         for mod in modification_list:
-            peptide[int(mod["location"])] += f"[{mod['name']}]"
+            name = mod.get("name")
+            if name and name != "unknown modification":
+                tag = f"[{mod['name']}]"
+            elif "monoisotopicMassDelta" in mod:
+                s = mod["monoisotopicMassDelta"]
+                tag = f"[{s:+.5f}]"
+            else:
+                raise ModificationException(f"Not enough information about modification: {mod}")
+            peptide[int(mod["location"])] += tag
 
         # Add dashes between residues and termini, and join sequence
         peptide[0] = peptide[0] + "-" if peptide[0] else ""
