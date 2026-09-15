@@ -487,8 +487,16 @@ class MzidQuickReader(ReaderBase):
             spectrum_id = spectrum["spectrumID"]
             spectrum_title = spectrum["spectrum title"] if "spectrum title" in spectrum else None
             run = Path(spectrum["location"]).stem if "location" in spectrum else None
-            rt = float(spectrum[self._spectrum_rt_key]) if self._spectrum_rt_key else None
-            ion_mobility = float(spectrum[self._im_key]) if self._im_key else None
+            rt = (
+                float(spectrum[self._spectrum_rt_key])
+                if self._spectrum_rt_key and self._spectrum_rt_key in spectrum
+                else None
+            )
+            ion_mobility = (
+                float(spectrum[self._im_key])
+                if self._im_key and self._im_key in spectrum
+                else None
+            )
 
             # Parse PSMs from spectrum
             for entry in spectrum["SpectrumIdentificationItem"]:
@@ -916,7 +924,7 @@ class MzidQuickReader(ReaderBase):
             precursor_mz = None
 
         # Override spectrum-level RT if present at PSM level
-        if self._rt_key:
+        if self._rt_key and self._rt_key in sii:
             rt = cast(float, sii[self._rt_key])
 
         metadata = {col: str(sii[col]) for col in sii.keys() if col not in self._non_metadata_keys}
@@ -928,10 +936,9 @@ class MzidQuickReader(ReaderBase):
         else:
             psm_spectrum_id = spectrum_id
 
-        if self._score_key:
+        score = None
+        if self._score_key and self._score_key in sii:
             score = sii[self._score_key]
-        else:
-            score = None
 
         psm = PSM(
             peptidoform=peptidoform,
@@ -939,8 +946,8 @@ class MzidQuickReader(ReaderBase):
             run=run,
             is_decoy=is_decoy,
             score=score,
-            qvalue=sii[self._qvalue_key] if self._qvalue_key else None,
-            pep=sii[self._pep_key] if self._pep_key else None,
+            qvalue=sii[self._qvalue_key] if self._qvalue_key and self._qvalue_key in sii else None,
+            pep=sii[self._pep_key] if self._pep_key and self._pep_key in sii else None,
             precursor_mz=precursor_mz,
             retention_time=rt,
             ion_mobility=ion_mobility,
