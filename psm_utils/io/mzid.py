@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from lxml import etree
+from lxml.etree import _Element
 from psims.mzid import MzIdentMLWriter  # type: ignore[import]
 from pyteomics import mzid  # type: ignore[import]
 from rich.progress import Progress
@@ -414,7 +415,9 @@ class MzidQuickReader(ReaderBase):
     This version uses a quick parsing approach using pyteomics.
     """
 
-    def __init__(self, filename: str | Path, *args, score_key: str = None, **kwargs) -> None:
+    def __init__(
+        self, filename: str | Path, *args, score_key: str | None = None, **kwargs
+    ) -> None:
         """
         Quick, and not totally complete reader for mzIdentML PSM files.
 
@@ -449,18 +452,18 @@ class MzidQuickReader(ReaderBase):
         super().__init__(filename, *args, **kwargs)
         self._non_metadata_keys = ["ContactRole", "passThreshold"]
         self._score_key = score_key
-        self._rt_key = None
-        self._spectrum_rt_key = None
-        self._qvalue_key = None
-        self._pep_key = None
-        self._im_key = None
+        self._rt_key: str | None = None
+        self._spectrum_rt_key: str | None = None
+        self._qvalue_key: str | None = None
+        self._pep_key: str | None = None
+        self._im_key: str | None = None
 
         # some helper-dictionaries
-        self.peptides_dict = {}
-        self.peptide_evidences_dict = {}
-        self.db_sequences_dict = {}
-        self.search_dbs_dict = {}
-        self.spectra_data_dict = {}
+        self.peptides_dict: dict[str, dict[str, Any]] = {}
+        self.peptide_evidences_dict: dict[str, dict[str, Any]] = {}
+        self.db_sequences_dict: dict[str, dict[str, Any]] = {}
+        self.search_dbs_dict: dict[str, dict[str, Any]] = {}
+        self.spectra_data_dict: dict[str, dict[str, Any]] = {}
 
         self._preparse_references()
 
@@ -525,16 +528,16 @@ class MzidQuickReader(ReaderBase):
             element.clear()
 
     @staticmethod
-    def _parse_peptide(peptide_element: etree.Element) -> dict[str, dict]:
-        pep_id = None
-        attributes = {}
+    def _parse_peptide(peptide_element: _Element) -> dict[str, dict[str, Any]]:
+        pep_id: str | None = None
+        attributes: dict[str, Any] = {}
         attributes["PeptideSequence"] = None
         attributes["Modification"] = []
 
         # parse the Peptide's attributes
         for idx, item in peptide_element.items():
             if idx == "id":
-                pep_id = item
+                pep_id = cast(str, item)
 
         for event, item in etree.iterwalk(
             peptide_element,
@@ -556,10 +559,10 @@ class MzidQuickReader(ReaderBase):
             else:
                 item.clear()
 
-        return {pep_id: attributes}
+        return {cast(str, pep_id): attributes}
 
     @staticmethod
-    def _parse_modification(modification: etree.Element) -> dict[str, str]:
+    def _parse_modification(modification: _Element) -> dict[str, str]:
         # parse the Modification's attributes
         params = MzidQuickReader._parse_elements_attributes(modification)
 
@@ -576,7 +579,7 @@ class MzidQuickReader(ReaderBase):
         return params
 
     @staticmethod
-    def _parse_elements_attributes(param: etree.Element):
+    def _parse_elements_attributes(param: _Element):
         attributes = {}
         for idx, item in param.items():
             attributes[idx] = item
@@ -584,7 +587,7 @@ class MzidQuickReader(ReaderBase):
         return attributes
 
     @staticmethod
-    def _parse_peptideevidence(pepevidence_element: etree.Element) -> dict[str, dict]:
+    def _parse_peptideevidence(pepevidence_element: _Element) -> dict[str, dict]:
         # parse the PeptideEvidence's attributes
         attributes = MzidQuickReader._parse_elements_attributes(pepevidence_element)
         pep_ev_id = attributes["id"]
@@ -606,7 +609,7 @@ class MzidQuickReader(ReaderBase):
         return text.lower() in ("yes", "true", "t", "1")
 
     @staticmethod
-    def _parse_dbsequence(dbseq_element: etree.Element) -> dict[str, dict]:
+    def _parse_dbsequence(dbseq_element: _Element) -> dict[str, dict]:
         dbseq_id = None
 
         # parse the DBSequences's attributes
@@ -639,7 +642,7 @@ class MzidQuickReader(ReaderBase):
         return {dbseq_id: attributes}
 
     @staticmethod
-    def _parse_searchdb(searchdb_element: etree.Element) -> dict[str, dict]:
+    def _parse_searchdb(searchdb_element: _Element) -> dict[str, dict]:
         db_id = None
 
         # parse the SearchDB's attributes
@@ -673,7 +676,7 @@ class MzidQuickReader(ReaderBase):
         return {db_id: attributes}
 
     @staticmethod
-    def _parse_spectradata(spectradata_element: etree.Element) -> dict[str, dict]:
+    def _parse_spectradata(spectradata_element: _Element) -> dict[str, dict]:
         specdata_id = None
 
         # parse the SearchDB's attributes
@@ -705,7 +708,7 @@ class MzidQuickReader(ReaderBase):
 
         return {specdata_id: attributes}
 
-    def _parse_sir(self, sir_element: etree.Element) -> dict:
+    def _parse_sir(self, sir_element: _Element) -> dict:
         # parse the SearchDB's attributes
         attributes = MzidQuickReader._parse_elements_attributes(sir_element)
         attributes["SpectrumIdentificationItem"] = []
@@ -738,7 +741,7 @@ class MzidQuickReader(ReaderBase):
 
         return attributes
 
-    def _parse_sii(self, sii_element: etree.Element) -> dict:
+    def _parse_sii(self, sii_element: _Element) -> dict:
         # parse the SearchDB's attributes
         attributes = MzidQuickReader._parse_elements_attributes(sii_element)
         del attributes["id"]
@@ -788,9 +791,9 @@ class MzidQuickReader(ReaderBase):
         return attributes
 
     @staticmethod
-    def _parse_param_name_and_value(param_item: etree.Element) -> tuple[str, str | float]:
-        param_name = None
-        param_val = None
+    def _parse_param_name_and_value(param_item: _Element) -> tuple[str | None, str | float | None]:
+        param_name: str | None = None
+        param_val: str | float | None = None
         param_attrs = MzidQuickReader._parse_elements_attributes(param_item)
         if "name" in param_attrs.keys() and "value" in param_attrs.keys():
             param_name = param_attrs["name"]
@@ -801,7 +804,7 @@ class MzidQuickReader(ReaderBase):
 
         return param_name, param_val
 
-    def _parse_peptide_evidence_ref(self, pepevidenceref_item: etree.Element) -> dict[str, dict]:
+    def _parse_peptide_evidence_ref(self, pepevidenceref_item: _Element) -> dict[str, dict]:
         pep_evidence_attrs = MzidQuickReader._parse_elements_attributes(pepevidenceref_item)
         pep_evidence_data = copy.deepcopy(
             self.peptide_evidences_dict[pep_evidence_attrs["peptideEvidence_ref"]]
@@ -823,8 +826,8 @@ class MzidQuickReader(ReaderBase):
         return pep_evidence_data
 
     @staticmethod
-    def _parse_analysissoftware(spectradata_element: etree.Element) -> str:
-        software_name = None
+    def _parse_analysissoftware(spectradata_element: _Element) -> str | None:
+        software_name: str | None = None
         for event, item in etree.iterwalk(
             spectradata_element,
             events=(
@@ -893,19 +896,19 @@ class MzidQuickReader(ReaderBase):
         run: str | None,
         rt: float | None,
         ion_mobility: float | None,
-        spectrum_identification_item: dict[str, str | float | list],
+        spectrum_identification_item: dict[str, str | float | list[Any]],
     ) -> PSM:
         """Parse single mzid entry to :py:class:`~psm_utils.peptidoform.Peptidoform`."""
         sii = spectrum_identification_item
         try:
-            modifications = sii["Modification"]
+            modifications = cast(list[dict], sii["Modification"])
         except KeyError:
             modifications = []
-        sequence = sii["PeptideSequence"]
-        charge = sii["chargeState"] if "chargeState" in sii else None
+        sequence = cast(str, sii["PeptideSequence"])
+        charge: int | None = cast(int, sii["chargeState"]) if "chargeState" in sii else None
         peptidoform = self._parse_peptidoform(sequence, modifications, charge)
         is_decoy, protein_list = self._get_accessions_from_peptide_evidence_ref(
-            sii["PeptideEvidenceRef"]
+            cast(list[dict], sii["PeptideEvidenceRef"])
         )
         try:
             precursor_mz = sii["experimentalMassToCharge"]
@@ -914,7 +917,7 @@ class MzidQuickReader(ReaderBase):
 
         # Override spectrum-level RT if present at PSM level
         if self._rt_key:
-            rt = float(sii[self._rt_key])
+            rt = cast(float, sii[self._rt_key])
 
         metadata = {col: str(sii[col]) for col in sii.keys() if col not in self._non_metadata_keys}
 
@@ -925,10 +928,11 @@ class MzidQuickReader(ReaderBase):
         else:
             psm_spectrum_id = spectrum_id
 
-        try:
+        if self._score_key:
             score = sii[self._score_key]
-        except KeyError:
+        else:
             score = None
+
         psm = PSM(
             peptidoform=peptidoform,
             spectrum_id=psm_spectrum_id,
@@ -1006,12 +1010,13 @@ class MzidQuickReader(ReaderBase):
                 break
 
     @staticmethod
-    def _infer_score_name(keys) -> str:
+    def _infer_score_name(keys) -> str | None:
         """Infer the score from the list of known PSM scores."""
         lower_keys = {key.lower(): key for key in keys}
         for score in STANDARD_SEARCHENGINE_SCORES:
             if score in lower_keys:
                 return lower_keys[score]
+        return None
 
     @staticmethod
     def _infer_qvalue_name(keys) -> str | None:
@@ -1019,8 +1024,7 @@ class MzidQuickReader(ReaderBase):
         for qvalue in Q_VALUE_TERMS:
             if qvalue in keys:
                 return qvalue
-        else:
-            return None
+        return None
 
     @staticmethod
     def _infer_pep_name(keys) -> str | None:
@@ -1028,8 +1032,7 @@ class MzidQuickReader(ReaderBase):
         for pep in PEP_TERMS:
             if pep in keys:
                 return pep
-        else:
-            return None
+        return None
 
 
 class MzidWriter(WriterBase):
