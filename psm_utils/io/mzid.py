@@ -542,7 +542,7 @@ class MzidQuickReader(ReaderBase):
                 self.spectra_data_dict |= MzidQuickReader._parse_spectradata(element)
             elif tag == "AnalysisSoftware" and self._source is None:
                 # only set the source if it hasn't been set yet, and hence only the first AnalysisSoftware element will be used
-                self._source = MzidQuickReader._parse_elements_attributes(element).get("name")
+                self._source = cast(str | None, element.get("name"))
 
             # Free memory: clear the element itself, then drop now-empty preceding siblings
             # from the parent so memory use stays bounded on very large files.
@@ -597,8 +597,7 @@ class MzidQuickReader(ReaderBase):
                 tag = item.tag.rpartition("}")[2]
 
                 if tag == "cvParam":
-                    params_attributes = MzidQuickReader._parse_elements_attributes(item)
-                    params["name"] = params_attributes["name"]
+                    params["name"] = cast(str | None, item.get("name"))
             else:
                 item.clear()
 
@@ -689,7 +688,7 @@ class MzidQuickReader(ReaderBase):
                 for _, ff_item in etree.iterwalk(
                     item, events=("end",), tag=("{*}cvParam", "{*}userParam")
                 ):
-                    attributes[tag] = MzidQuickReader._parse_elements_attributes(ff_item)["name"]
+                    attributes[tag] = ff_item.get("name")
 
                 # there could also be cvParams, but ignore them for now
             else:
@@ -722,7 +721,7 @@ class MzidQuickReader(ReaderBase):
                 for _, item in etree.iterwalk(
                     item, events=("end",), tag=("{*}cvParam", "{*}userParam")
                 ):
-                    attributes[tag] = MzidQuickReader._parse_elements_attributes(item)["name"]
+                    attributes[tag] = item.get("name")
 
                 # there could also be cvParams, but ignore them for now
             else:
@@ -814,29 +813,26 @@ class MzidQuickReader(ReaderBase):
 
     @staticmethod
     def _parse_param_name_and_value(param_item: _Element) -> tuple[str | None, str | float | None]:
-        param_name: str | None = None
+        param_name = cast(str | None, param_item.get("name"))
         param_val: str | float | None = None
-        param_attrs = MzidQuickReader._parse_elements_attributes(param_item)
-        if "name" in param_attrs.keys():
-            param_name = param_attrs["name"]
-            if "value" in param_attrs.keys():
-                try:
-                    param_val = float(param_attrs["value"])
-                except ValueError:
-                    param_val = str(param_attrs["value"])
-            else:
+        if param_name is not None:
+            raw_val = cast(str | None, param_item.get("value"))
+            if raw_val is None:
                 param_val = ""
+            else:
+                try:
+                    param_val = float(raw_val)
+                except ValueError:
+                    param_val = str(raw_val)
 
         return param_name, param_val
 
     def _parse_peptide_evidence_ref(self, pepevidenceref_item: _Element) -> dict[str, dict]:
-        pep_evidence_attrs = MzidQuickReader._parse_elements_attributes(pepevidenceref_item)
+        peptide_evidence_ref = cast(str, pepevidenceref_item.get("peptideEvidence_ref"))
         # A shallow copy is sufficient: only top-level keys are ever added/removed below
         # (via `|=`/`del`); the one nested value (a peptide's `Modification` list) is only
         # ever read downstream, never mutated in place.
-        pep_evidence_data = dict(
-            self.peptide_evidences_dict[pep_evidence_attrs["peptideEvidence_ref"]]
-        )
+        pep_evidence_data = dict(self.peptide_evidences_dict[peptide_evidence_ref])
 
         # add actual information from DBSequence
         db_sequence_data = self.db_sequences_dict[pep_evidence_data["dBSequence_ref"]]
