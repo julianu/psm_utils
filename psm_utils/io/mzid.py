@@ -460,10 +460,9 @@ class MzidQuickReader(ReaderBase):
 
         # some helper-dictionaries
         self.peptides_dict: dict[str, dict[str, Any]] = {}
-        self.peptide_evidences_dict: dict[str, dict[str, Any]] = {}
-        self.db_sequences_dict: dict[str, dict[str, Any]] = {}
-        self.search_dbs_dict: dict[str, dict[str, Any]] = {}
-        self.spectra_data_dict: dict[str, dict[str, Any]] = {}
+        self.peptide_evidences_dict: dict[str, tuple[str, bool | None]] = {}
+        self.db_sequences_dict: dict[str, str | None] = {}
+        self.spectra_data_dict: dict[str, str | None] = {}
 
     def __iter__(self):
         """
@@ -471,11 +470,10 @@ class MzidQuickReader(ReaderBase):
 
         Notes
         -----
-        Reference elements (``Peptide``, ``PeptideEvidence``, ``DBSequence``,
-        ``SearchDatabase``, ``SpectraData``, ``AnalysisSoftware``) and
-        ``SpectrumIdentificationResult`` elements are parsed in a single streaming pass,
-        relying on the mzIdentML schema guaranteeing that ``SequenceCollection`` and
-        ``DataCollection/Inputs`` (which hold the former) always precede
+        Reference elements (``Peptide``, ``PeptideEvidence``, ``DBSequence``, ``SpectraData``,
+        ``AnalysisSoftware``) and ``SpectrumIdentificationResult`` elements are parsed in a single
+        streaming pass, relying on the mzIdentML schema guaranteeing that ``SequenceCollection``
+        and ``DataCollection/Inputs`` (which hold the former) always precede
         ``DataCollection/AnalysisData`` (which holds the latter) in document order. By the
         time a ``SpectrumIdentificationResult`` is encountered, all reference dicts are
         therefore already fully populated.
@@ -490,7 +488,6 @@ class MzidQuickReader(ReaderBase):
                 "{*}Peptide",
                 "{*}PeptideEvidence",
                 "{*}DBSequence",
-                "{*}SearchDatabase",
                 "{*}SpectraData",
                 "{*}AnalysisSoftware",
                 "{*}SpectrumIdentificationResult",
@@ -531,15 +528,17 @@ class MzidQuickReader(ReaderBase):
                         spectrum_id, spectrum_title, run, rt, ion_mobility, entry
                     )
             elif tag == "Peptide":
-                self.peptides_dict |= MzidQuickReader._parse_peptide(element)
+                pep_id, pep_data = MzidQuickReader._parse_peptide(element)
+                self.peptides_dict[pep_id] = pep_data
             elif tag == "PeptideEvidence":
-                self.peptide_evidences_dict |= MzidQuickReader._parse_peptideevidence(element)
+                pep_ev_id, pep_ev_data = MzidQuickReader._parse_peptideevidence(element)
+                self.peptide_evidences_dict[pep_ev_id] = pep_ev_data
             elif tag == "DBSequence":
-                self.db_sequences_dict |= MzidQuickReader._parse_dbsequence(element)
-            elif tag == "SearchDatabase":
-                self.search_dbs_dict |= MzidQuickReader._parse_searchdb(element)
+                dbseq_id, dbseq_data = MzidQuickReader._parse_dbsequence(element)
+                self.db_sequences_dict[dbseq_id] = dbseq_data
             elif tag == "SpectraData":
-                self.spectra_data_dict |= MzidQuickReader._parse_spectradata(element)
+                specdata_id, specdata = MzidQuickReader._parse_spectradata(element)
+                self.spectra_data_dict[specdata_id] = specdata
             elif tag == "AnalysisSoftware" and self._source is None:
                 # only set the source if it hasn't been set yet, and hence only the first AnalysisSoftware element will be used
                 self._source = cast(str | None, element.get("name"))
@@ -551,7 +550,7 @@ class MzidQuickReader(ReaderBase):
                 del element.getparent()[0]
 
     @staticmethod
-    def _parse_peptide(peptide_element: _Element) -> dict[str, dict[str, Any]]:
+    def _parse_peptide(peptide_element: _Element) -> tuple[str, dict[str, Any]]:
         pep_id: str | None = None
         attributes: dict[str, Any] = {}
         attributes["PeptideSequence"] = None
@@ -582,152 +581,67 @@ class MzidQuickReader(ReaderBase):
             else:
                 item.clear()
 
-        return {cast(str, pep_id): attributes}
+        return cast(str, pep_id), attributes
 
     @staticmethod
-    def _parse_modification(modification: _Element) -> dict[str, Any]:
-        # parse the Modification's attributes
-        params = MzidQuickReader._parse_elements_attributes(modification)
-
-        if "monoisotopicMassDelta" in params.keys():
-            params["monoisotopicMassDelta"] = float(params["monoisotopicMassDelta"])
+    def _parse_modification(modification: _Element) -> tuple[str | None, float | None, str | None]:
+        # A Modification record is fixed-shape (no cvParam/userParam passthrough), so
+        # it's returned as a plain (location, monoisotopic_mass_delta, name) tuple.
+        # Only these three are ever read downstream right now (see _parse_peptidoform).
+        location = cast(str | None, modification.get("location"))
+        mono_mass_delta_text = modification.get("monoisotopicMassDelta")
+        mono_mass_delta = float(mono_mass_delta_text) if mono_mass_delta_text is not None else None
+        name: str | None = None
 
         for event, item in etree.iterwalk(modification, events=("start", "end")):
             if event == "start":
                 tag = item.tag.rpartition("}")[2]
 
                 if tag == "cvParam":
-                    params["name"] = cast(str | None, item.get("name"))
+                    name = cast(str | None, item.get("name"))
             else:
                 item.clear()
 
-        return params
+        return location, mono_mass_delta, name
 
     @staticmethod
     def _parse_elements_attributes(param: _Element) -> dict[str, Any]:
         return dict(cast(dict[str, str], param.attrib))
 
     @staticmethod
-    def _parse_peptideevidence(pepevidence_element: _Element) -> dict[str, dict]:
-        # parse the PeptideEvidence's attributes
-        attributes = MzidQuickReader._parse_elements_attributes(pepevidence_element)
-        pep_ev_id = attributes["id"]
-        del attributes["id"]
+    def _parse_peptideevidence(
+        pepevidence_element: _Element,
+    ) -> tuple[str, tuple[str, bool | None]]:
+        # Only dBSequence_ref (consumed as a lookup key) and isDecoy (read downstream)
+        # are ever used. PeptideEvidence's other attributes -- peptide_ref, start, end,
+        # pre, post, frame, translationTable_ref -- are not used anywhere in psm_utils (yet).
+        pep_ev_id = cast(str, pepevidence_element.get("id"))
+        db_sequence_ref = cast(str, pepevidence_element.get("dBSequence_ref"))
+        is_decoy_text = pepevidence_element.get("isDecoy")
+        is_decoy = (
+            MzidQuickReader._text_to_boolean(is_decoy_text) if is_decoy_text is not None else None
+        )
 
-        # transform some types
-        if "end" in attributes.keys():
-            attributes["end"] = int(attributes["end"])
-        if "isDecoy" in attributes.keys():
-            attributes["isDecoy"] = MzidQuickReader._text_to_boolean(attributes["isDecoy"])
-        if "start" in attributes.keys():
-            attributes["start"] = int(attributes["start"])
-
-        # there could be cvParams or userParams, but they don't have any dedicated meaninfg (yet)
-        return {pep_ev_id: attributes}
+        return pep_ev_id, (db_sequence_ref, is_decoy)
 
     @staticmethod
     def _text_to_boolean(text: str) -> bool:
         return text.lower() in ("yes", "true", "t", "1")
 
     @staticmethod
-    def _parse_dbsequence(dbseq_element: _Element) -> dict[str, dict]:
-        dbseq_id = None
-
-        # parse the DBSequences's attributes
-        attributes = MzidQuickReader._parse_elements_attributes(dbseq_element)
-        dbseq_id = attributes["id"]
-        del attributes["id"]
-
-        # transform some types
-        if "length" in attributes.keys():
-            attributes["length"] = int(attributes["length"])
-
-        # get cvParams and userParams (mapping: name -> value)
-        for event, item in etree.iterwalk(
-            dbseq_element,
-            events=(
-                "start",
-                "end",
-            ),
-            tag=("{*}cvParam", "{*}userParam"),
-        ):
-            if event == "start":
-                param_name, param_val = MzidQuickReader._parse_param_name_and_value(item)
-                if param_name is not None:
-                    attributes[param_name] = param_val
-
-            else:
-                item.clear()
-
-        # there is also Seq but ignore this for psm_utils
-        return {dbseq_id: attributes}
+    def _parse_dbsequence(dbseq_element: _Element) -> tuple[str, str | None]:
+        # Only accession is ever read downstream (via the merge chain into
+        # _get_accessions_from_peptide_evidence_ref), no other attributes needed right now.
+        dbseq_id = cast(str, dbseq_element.get("id"))
+        accession = cast(str | None, dbseq_element.get("accession"))
+        return dbseq_id, accession
 
     @staticmethod
-    def _parse_searchdb(searchdb_element: _Element) -> dict[str, dict]:
-        db_id = None
-
-        # parse the SearchDB's attributes
-        attributes = MzidQuickReader._parse_elements_attributes(searchdb_element)
-        db_id = attributes["id"]
-        del attributes["id"]
-
-        # transform some types
-        if "numDatabaseSequences" in attributes.keys():
-            attributes["numDatabaseSequences"] = int(attributes["numDatabaseSequences"])
-        if "numResidues" in attributes.keys():
-            attributes["numResidues"] = int(attributes["numResidues"])
-
-        for event, item in etree.iterwalk(
-            searchdb_element, events=("start", "end"), tag=("{*}FileFormat", "{*}DatabaseName")
-        ):
-            if event == "start":
-                # strip the namespace
-                tag = item.tag.rpartition("}")[2]
-
-                # just take the name of the first userParam or cvParam in the FileFormat or DatabaseName
-                for _, ff_item in etree.iterwalk(
-                    item, events=("end",), tag=("{*}cvParam", "{*}userParam")
-                ):
-                    attributes[tag] = ff_item.get("name")
-
-                # there could also be cvParams, but ignore them for now
-            else:
-                item.clear()
-
-        return {db_id: attributes}
-
-    @staticmethod
-    def _parse_spectradata(spectradata_element: _Element) -> dict[str, dict]:
-        specdata_id = None
-
-        # parse the SearchDB's attributes
-        attributes = MzidQuickReader._parse_elements_attributes(spectradata_element)
-        specdata_id = attributes["id"]
-        del attributes["id"]
-
-        for event, item in etree.iterwalk(
-            spectradata_element,
-            events=(
-                "start",
-                "end",
-            ),
-            tag=("{*}FileFormat", "{*}SpectrumIDFormat"),
-        ):
-            if event == "start":
-                # strip the namespace
-                tag = item.tag.rpartition("}")[2]
-
-                # just take the name of the first userParam or cvParam in the FileFormat or DatabaseName
-                for _, item in etree.iterwalk(
-                    item, events=("end",), tag=("{*}cvParam", "{*}userParam")
-                ):
-                    attributes[tag] = item.get("name")
-
-                # there could also be cvParams, but ignore them for now
-            else:
-                item.clear()
-
-        return {specdata_id: attributes}
+    def _parse_spectradata(spectradata_element: _Element) -> tuple[str, str | None]:
+        # Only location is ever read downstream (spectrum["location"], used to derive `run`).
+        specdata_id = cast(str, spectradata_element.get("id"))
+        location = cast(str | None, spectradata_element.get("location"))
+        return specdata_id, location
 
     def _parse_sir(self, sir_element: _Element) -> dict:
         # parse the SearchDB's attributes
@@ -738,8 +652,7 @@ class MzidQuickReader(ReaderBase):
             "spectraData_ref" in attributes.keys()
             and attributes["spectraData_ref"] in self.spectra_data_dict.keys()
         ):
-            spectra_data = self.spectra_data_dict[attributes["spectraData_ref"]]
-            attributes |= spectra_data
+            attributes["location"] = self.spectra_data_dict[attributes["spectraData_ref"]]
             del attributes["spectraData_ref"]
 
         for event, item in etree.iterwalk(
@@ -776,10 +689,6 @@ class MzidQuickReader(ReaderBase):
             attributes["chargeState"] = int(attributes["chargeState"])
         if "experimentalMassToCharge" in attributes.keys():
             attributes["experimentalMassToCharge"] = float(attributes["experimentalMassToCharge"])
-        if "passThreshold" in attributes.keys():
-            attributes["passThreshold"] = MzidQuickReader._text_to_boolean(
-                attributes["passThreshold"]
-            )
         if "rank" in attributes.keys():
             attributes["rank"] = int(attributes["rank"])
 
@@ -827,46 +736,39 @@ class MzidQuickReader(ReaderBase):
 
         return param_name, param_val
 
-    def _parse_peptide_evidence_ref(self, pepevidenceref_item: _Element) -> dict[str, dict]:
+    def _parse_peptide_evidence_ref(
+        self, pepevidenceref_item: _Element
+    ) -> tuple[bool | None, str | None]:
+        # A PeptideEvidenceRef record has no child tags, so it's returned as a plain
+        # (is_decoy, accession) tuple. PeptideSequence/Modification are already available on
+        # the SII directly (via _parse_sii's own peptide merge).
         peptide_evidence_ref = cast(str, pepevidenceref_item.get("peptideEvidence_ref"))
-        # A shallow copy is sufficient: only top-level keys are ever added/removed below
-        # (via `|=`/`del`); the one nested value (a peptide's `Modification` list) is only
-        # ever read downstream, never mutated in place.
-        pep_evidence_data = dict(self.peptide_evidences_dict[peptide_evidence_ref])
+        db_sequence_ref, is_decoy = self.peptide_evidences_dict[peptide_evidence_ref]
+        accession = self.db_sequences_dict[db_sequence_ref]
 
-        # add actual information from DBSequence
-        db_sequence_data = self.db_sequences_dict[pep_evidence_data["dBSequence_ref"]]
-        pep_evidence_data |= db_sequence_data
-        del pep_evidence_data["dBSequence_ref"]
-
-        search_db_data = self.search_dbs_dict[pep_evidence_data["searchDatabase_ref"]]
-        pep_evidence_data |= search_db_data
-        del pep_evidence_data["searchDatabase_ref"]
-
-        peptide_data = self.peptides_dict[pep_evidence_data["peptide_ref"]]
-        pep_evidence_data |= peptide_data
-        del pep_evidence_data["peptide_ref"]
-
-        return pep_evidence_data
+        return is_decoy, accession
 
     @staticmethod
     def _parse_peptidoform(
-        seq: str, modification_list: list[dict[str, Any]], charge: int | None
+        seq: str,
+        modification_list: list[tuple[str | None, float | None, str | None]],
+        charge: int | None,
     ) -> Peptidoform:
         """Parse mzid sequence and modifications to Peptidoform."""
         peptide = [""] + list(seq) + [""]
 
         # Add modification labels
-        for mod in modification_list:
-            name = mod.get("name")
+        for location, mono_mass_delta, name in modification_list:
             if name and name != "unknown modification":
-                tag = f"[{mod['name']}]"
-            elif "monoisotopicMassDelta" in mod:
-                s = mod["monoisotopicMassDelta"]
-                tag = f"[{s:+.5f}]"
+                tag = f"[{name}]"
+            elif mono_mass_delta is not None:
+                tag = f"[{mono_mass_delta:+.5f}]"
             else:
-                raise ModificationException(f"Not enough information about modification: {mod}")
-            peptide[int(mod["location"])] += tag
+                raise ModificationException(
+                    f"Not enough information about modification: "
+                    f"{(location, mono_mass_delta, name)}"
+                )
+            peptide[int(cast(str, location))] += tag
 
         # Add dashes between residues and termini, and join sequence
         peptide[0] = peptide[0] + "-" if peptide[0] else ""
@@ -880,7 +782,9 @@ class MzidQuickReader(ReaderBase):
         return Peptidoform(proforma_seq)
 
     @staticmethod
-    def _get_accessions_from_peptide_evidence_ref(peptide_evidence_list: list[dict]):
+    def _get_accessions_from_peptide_evidence_ref(
+        peptide_evidence_list: list[tuple[bool | None, str | None]],
+    ) -> tuple[bool, list[str]]:
         """
         Parse PeptideEvidence list of PSM.
 
@@ -893,10 +797,10 @@ class MzidQuickReader(ReaderBase):
         might not have been filtered for by the search engine.
 
         """
-        isdecoy = all(
-            [entry["isDecoy"] if "isDecoy" in entry else None for entry in peptide_evidence_list]
-        )
-        protein_list = [d["accession"] for d in peptide_evidence_list if "accession" in d.keys()]
+        isdecoy = all(is_decoy for is_decoy, _ in peptide_evidence_list)
+        protein_list = [
+            accession for _, accession in peptide_evidence_list if accession is not None
+        ]
         return isdecoy, protein_list
 
     def _get_peptide_spectrum_match(
@@ -911,14 +815,16 @@ class MzidQuickReader(ReaderBase):
         """Parse single mzid entry to :py:class:`~psm_utils.peptidoform.Peptidoform`."""
         sii = spectrum_identification_item
         try:
-            modifications = cast(list[dict], sii["Modification"])
+            modifications = cast(
+                list[tuple[str | None, float | None, str | None]], sii["Modification"]
+            )
         except KeyError:
             modifications = []
         sequence = cast(str, sii["PeptideSequence"])
         charge: int | None = cast(int, sii["chargeState"]) if "chargeState" in sii else None
         peptidoform = self._parse_peptidoform(sequence, modifications, charge)
         is_decoy, protein_list = self._get_accessions_from_peptide_evidence_ref(
-            cast(list[dict], sii["PeptideEvidenceRef"])
+            cast(list[tuple[bool | None, str | None]], sii["PeptideEvidenceRef"])
         )
         try:
             precursor_mz = sii["experimentalMassToCharge"]
